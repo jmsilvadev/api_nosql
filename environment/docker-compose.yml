@@ -1,0 +1,115 @@
+version: '2.2'
+services:
+  es01:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.1.0
+    container_name: elasticsearch
+    environment:
+      - node.name=es01
+      - cluster.name=elastic-cluster
+      - discovery.seed_hosts=es02
+      - cluster.initial_master_nodes=es01,es02
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes: [ 'esdata1:/usr/share/elasticsearch/data']
+    ports:
+      - 9200:9200
+    healthcheck:
+      test: curl -s http://localhost:9200 >/dev/null; if [[ $$? == 52 ]]; then echo 0; else echo 1; fi
+      interval: 30s
+      timeout: 10s
+      retries: 5    
+    networks:
+      esnet:
+        ipv4_address: 172.24.0.2
+        
+  es02:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.1.0
+    container_name: elasticsearch2
+    environment:
+      - node.name=es02
+      - cluster.name=elastic-cluster
+      - discovery.seed_hosts=es01
+      - cluster.initial_master_nodes=es01,es02 
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms1g -Xms1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes: [ 'esdata2:/usr/share/elasticsearch/data']
+    networks:
+      esnet:
+        ipv4_address: 172.24.0.3
+  
+  wait_until_ready:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.1.0
+    command: /usr/bin/true
+    depends_on: {"es01": {"condition": "service_healthy"}}
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.1.0
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    restart: "unless-stopped"
+    depends_on:
+      - wait_until_ready
+    #volumes: ['./config/:/usr/share/kibana/config']
+    networks:
+      esnet:
+        ipv4_address: 172.24.0.4
+
+  metricbeat:
+    image: docker.elastic.co/beats/metricbeat:7.1.0
+    container_name: metricbeat
+    networks:
+      - esnet
+    volumes:
+      - /proc:/hostfs/proc:ro
+      - /sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro
+      - /:/hostfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      #- "WAIT_FOR_HOSTS=94.126.172.94:9200 94.126.172.94:5601"
+      - ELASTICSEARCH_HOST=http://elasticsearch:9200
+      - KIBANA_HOST=http://elasticsearch:5601
+    #disable strict permission checks
+    command: metricbeat -e --strict.perms=false -system.hostfs=/hostfs
+    depends_on:
+      - kibana  
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:7.1.0
+    container_name: filebeat
+    networks:
+      - esnet
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/log/:/var/log/:ro
+      # This is needed for filebeat to load logs for auditd module
+      # - /var/log/audit/:/var/log/audit/:ro
+    environment:
+      - ELASTICSEARCH_HOST=http://elasticsearch:9200
+      - KIBANA_HOST=http://elasticsearch:5601
+    # disable strict permission checks
+    command: filebeat -e --strict.perms=false
+    depends_on:
+      - kibana
+
+volumes:
+  esdata1:
+    driver: local
+  esdata2:
+    driver: local
+
+networks:
+  esnet:
+    ipam:
+      config:
+        - subnet: 172.24.0.0/24

@@ -1,0 +1,134 @@
+variables:
+  PACKAGE_PATH: /go/src/api-nosql
+
+stages:
+  - dep
+  - code_style
+  - test
+  - build
+  - build_image
+  - deploy_image
+
+.anchors:
+  - &inject-gopath
+      mkdir -p $(dirname ${PACKAGE_PATH})
+      && ln -s ${CI_PROJECT_DIR} ${PACKAGE_PATH}
+      && cd ${PACKAGE_PATH}
+
+dep:
+  stage: dep
+  image: golang:latest
+  before_script:
+    - *inject-gopath
+  script:
+    - go get github.com/golang/dep/cmd/dep
+    - go get -u github.com/gosimple/slug
+    - go get -u github.com/go-chi/chi
+    - go get -u golang.org/x/lint/golint
+    - go get -u gotest.tools/assert
+    - dep init
+    - dep ensure -v -vendor-only
+  artifacts:
+    name: "vendor-$CI_PIPELINE_ID"
+    paths:
+      - vendor/
+    expire_in: 1 hour
+  only:
+    - merge_requests
+  except:
+    changes:
+    - README.md
+
+code_style:
+  stage: code_style
+  dependencies:
+    - dep
+  image: golang:latest
+  before_script:
+    - apt-get update
+    - apt-get install golint
+    - *inject-gopath
+  script:
+    - go fmt ./...
+    - go vet ./...
+    - golint -set_exit_status .
+  only:
+    - merge_requests
+  except:
+    changes:
+    - README.md
+
+test:
+  stage: test
+  dependencies:
+    - dep
+  image: golang:latest
+  before_script:
+    - *inject-gopath
+  script:
+    - go test -coverprofile=coverage/coverage.out -race ./...
+    - go tool cover -html=coverage/coverage.out -o coverage/coverage.html
+  coverage: '/\s*coverage:\s*\d+.\d+\%/'
+  artifacts:
+    paths:
+      - coverage/
+  only:
+    - merge_requests
+  except:
+    changes:
+    - README.md  
+
+build:
+  stage: build
+  dependencies:
+    - dep
+  image: golang:latest
+  before_script:
+    - *inject-gopath
+  script:
+    - go build -race -o environment/build/api-nosql
+  artifacts:
+    paths:
+      - environment/build/
+    expire_in: 1 week
+  only:
+    - merge_requests
+  except:
+    changes:
+    - README.md  
+
+build_image:
+  stage: build_image
+  image: docker:stable
+  dependencies:
+    - build
+  before_script:
+   - docker info
+  script:
+    - cd environment
+    - docker build -t api-nosql:latest . --rm=true --force-rm=true
+    - docker tag api-nosql:latest docker.repo.io/docker-images/api-nosql:latest
+    - docker save api-nosql:latest > build_image/api-nosql:latest
+  artifacts:
+    paths:
+      - environment/build_image/
+  only:
+    - merge_requests
+  except:
+    changes:
+    - README.md
+
+deploy_image:
+  stage: deploy_image
+  image: docker:stable
+  dependencies:
+    - build_image
+  before_script:
+    - cat environment/build_image/cs.password | docker login docker.repo.io -u fake_user --password-stdin
+  script:
+    - docker push docker.repo.io/docker-images/api-nosql:latest
+  only:
+    - merge_requests
+  except:
+    changes:
+    - README.md  
